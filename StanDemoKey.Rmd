@@ -1,0 +1,268 @@
+---
+title: 'Stan demo'
+author: 'key'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 5, fig.height = 3.5, fig.align = 'center')
+library(tidyverse)
+library(rstan)
+library(rstanarm)
+library(arm)
+set.seed(04182022)
+options(mc.cores = parallel::detectCores())
+```
+
+
+#### Part 1.  Linear Regression
+
+First consider a simple linear regression model with a single continuous variable.
+
+```{r sim_dat}
+n <- 100
+beta <- 5
+sigma <- 1
+x <- runif(n)
+y <- rnorm(n, x * beta, sigma)
+
+lm_dat <- tibble(x = x, y = y)
+lm_dat %>% ggplot(aes(y = y, x = x)) + geom_point() + geom_smooth(formula = 'y~x', method = 'lm')
+```
+
+
+We have used both `lm` and `stan_glm` to fit these models.
+
+```{r reg}
+lm_dat %>% lm(y ~ x, data = .) %>% display()
+lm_dat %>% stan_glm(y ~ x, data = ., refresh = 0) %>% print(digits = 2)
+```
+
+Unsurprisingly, `stan_lm` uses stan. The code can be extracted, but is not particularly easy to follow. However, we can fairly easily write code Stan code for this model, or obtain it see [https://mc-stan.org/docs/2_29/stan-users-guide/linear-regression.html](https://mc-stan.org/docs/2_29/stan-users-guide/linear-regression.html).
+
+
+```{stan output.var="lm.stan", eval = F}
+data {
+  int<lower=0> N;
+  vector[N] x;
+  vector[N] y;
+}
+parameters {
+  real alpha;
+  real beta;
+  real<lower=0> sigma;
+}
+model {
+  y ~ normal(alpha + beta * x, sigma);
+}
+```
+
+
+```{r reg_stan, results = 'hide'}
+Reg_params <- stan("lm.stan", 
+                  data=list(N = n, 
+                            y = y,
+                            x = x),
+                  iter = 2000)
+```
+
+```{r}
+print(Reg_params, pars = c('alpha', 'beta','sigma'))
+```
+
+
+#### Part 2.  Bayesian "t-test"
+
+The standard 2-sample t-test, typically has an assumption of constant variance between the groups. However, consider simulated data where the variance terms are different for each group.
+
+```{r}
+n1 <- 30
+mu1 <- 1
+sigma1 <- .5
+y1 <- rnorm(n1, mu1, sigma1)
+
+n2 <- 27
+mu2 <- .5
+sigma2 <- 1.5
+y2 <- rt(n2, mu2, sigma2)
+
+
+tibble(y = c(y1, y2), group = factor(c(rep(1, n1), rep(2, n2)))) %>%
+  ggplot(aes(y = y, x = group, color = group)) +
+  geom_boxplot() + theme_bw() +
+  geom_jitter() 
+```
+
+The default settings for the `t.test()` function do not account for different variances. There is an option for non-equal variances, but isn't necessarily clear what the procedure does and it doesn't directly return estimated variances.
+
+```{r}
+t.test(y1, y2)
+```
+
+Thus, we can easily construct this procedure in Stan. Consider the following code for a two-sample t-test.
+
+
+```{stan output.var="t_test.stan", eval = F}
+data {
+  int<lower=1> n1; // number of observations in group 1
+  vector[n1] y1; // observations from group 1
+  int<lower=1> n2; // number of observations in group 1
+  vector[n2] y2; // observations from group 1
+  
+}
+parameters {
+  real<lower=0> sigma; // variance parameter
+  real<lower=0> mu1; // group 1 mean 
+  real<lower=0> mu2; // group 2 mean 
+}
+transformed parameters{
+  real diff;
+  diff = mu1 - mu2;
+}
+model {
+  y1 ~ normal(mu1, sigma);
+  y2 ~ normal(mu2, sigma);
+}
+
+```
+
+
+```{r}
+ttest_params <- stan("t_test_key.stan", 
+                  data=list(n1 = n1, 
+                            y1 = y1,
+                            n2 = n2,
+                            y2 = y2),
+                  iter = 2000)
+
+print(ttest_params)
+```
+
+
+__Q1:__ Update the code to allow for different variances between the two groups.
+
+#### Part 3.  Logistic Regression
+
+Similarly for a logistic regression model with a single continuous variable.
+
+```{r }
+n <- 500
+beta <- 2
+x <- runif(n, -2, 2)
+p <- invlogit(x * beta)
+y <- rbinom(n, 1, p)
+
+logistic_dat <- tibble(x = x, y = y)
+logistic_dat %>% 
+  ggplot(aes(y = y, x = x)) + 
+  geom_point() + 
+  geom_smooth(formula = 'y~x', method = 'loess')
+```
+
+
+We have used both `glm` and `stan_glm` to fit these models.
+
+```{r logistic}
+logistic_dat %>% glm(y ~ x, data = ., family = binomial) %>% display()
+logistic_dat %>% stan_glm(y ~ x, data = ., family = binomial, refresh = 0) %>% print(digits = 2)
+```
+
+Similarly Stan code can be used to fit a logistic regression model.
+
+```{stan output.var="logistic.stan", eval = F}
+data {
+  int <lower = 0> N; 
+  int <lower = 0, upper = 1> y [N]; 
+  vector [N] x; 
+}
+
+parameters {
+  real alpha;
+  real beta;
+}
+
+model {
+  y ~ bernoulli_logit(alpha + beta * x);
+  
+  // alpha ~ normal(0, 1);
+  // beta ~ normal(1, 1);
+}
+
+```
+
+
+```{r reg_logistic, results = 'hide'}
+log_params <- stan("logistic.stan", 
+                  data=list(N = n, 
+                            y = y,
+                            x = x),
+                  iter = 2000)
+```
+
+```{r}
+print(log_params, pars = c('alpha', 'beta'))
+```
+
+__Q2:__ Update the STAN code to place priors on alpha and beta.
+
+#### Part 4.  Hierachical Logistic Regression
+
+The stan reference book contains code for a hierarchical logistic regression model [https://mc-stan.org/docs/2_29/stan-users-guide/hierarchical-logistic-regression.html](https://mc-stan.org/docs/2_29/stan-users-guide/hierarchical-logistic-regression.html).
+
+
+```{stan output.var="hier_logistic.stan", eval = F}
+data {
+  int<lower = 0> K;
+  int<lower = 0> N;
+  int<lower = 1, upper = K> kk[N];
+  vector[N] x;
+  int<lower = 0, upper = 1> y[N];
+}
+parameters {
+  matrix[K,2] beta;
+  vector[2] mu;
+  vector<lower=0>[2] sigma;
+}
+model {
+  mu ~ normal(0, 2);
+  sigma ~ normal(0, 2);
+  for (i in 1:2)
+    beta[ , i] ~ normal(mu[i], sigma[i]);
+  for (n in 1:N){
+    y[n] ~ bernoulli_logit(beta[kk[n], 1] + beta[kk[n], 2] * x[n]);
+  }
+}
+
+
+```
+
+__Q3:__ Simulate hierarchical logistic regression data
+
+```{r}
+N <- 500
+K <- 10
+kk <- rep(1:K, each = N/K)
+beta0 <- rnorm(K, sd = .5)
+beta1 <- rnorm(K, sd = .5)
+
+x <- runif(N)
+p <- invlogit(rep(beta0, each = N/K) + rep(beta1, each = N/K) * x)
+y <- rbinom(N,1,p)
+```
+
+```{r, results = 'hide'}
+hl_params <- stan("hier_logistic.stan", 
+                  data=list(N = N, 
+                            y = y,
+                            x = x,
+                            kk = kk,
+                            K = K),
+                  iter = 10000)
+
+```
+
+```{r}
+print(hl_params)
+```
+
